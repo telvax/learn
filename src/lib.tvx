@@ -1,0 +1,9 @@
+# The learn package: `learn.text`, `learn.bayes`, `learn.linear`, `learn.svm`, `learn.lda`, `learn.tree` and
+# `learn.optimize`. This file is its entry, which `tvpm` checks.
+from text import fit_tfidf
+from bayes import fit_multinomial
+from linear import fit_logistic
+from svm import fit_svc
+from lda import fit_lda
+from tree import fit_forest_classifier
+from optimize import minimize

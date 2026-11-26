@@ -139,37 +139,9 @@ fn probabilities(m: LogisticRegression, x: Sparse) -> List[Float]:
     out
 
 # The objective and its gradient at `theta` (the weights, feature after feature, then the intercepts): the mean log loss
-# of the rows plus `|W|^2 / (2 c n)`.
-fn objective(x: Sparse, xt: Sparse, target: List[Int], classes: List[Text], theta: List[Float], c: Float) -> (Float, List[Float]):
-    let k = int(classes.len())
-    let f = x.cols()
-    let n = std.math.to_float(x.rows())
-    let m = LogisticRegression(classes: classes, weights: theta.take(f * k), intercept: theta.skip(f * k), features: f)
-    let p = probabilities(m, x)
-    var loss = 0.0
-    var resid: List[(Int, Int, Float)] = []
-    var gb: List[Float] = []
-    for j in range(k):
-        gb.push(0.0)
-    for r in range(x.rows()):
-        let t = target.get(r).unwrap()
-        loss = loss - std.math.ln(std.math.max(p.get(r * k + t).unwrap(), 1.0e-300))
-        for cl in range(k):
-            let d = (p.get(r * k + cl).unwrap() - (1.0 if cl == t else 0.0)) / n
-            resid.push((r, cl, d))
-            gb[cl] = gb.get(cl).unwrap() + d
-    let gw = std.tensor.to_vec(xt.matmul(std.sparse.from_triplets(x.rows(), k, resid).to_dense()))
-    var grad: List[Float] = []
-    var penalty = 0.0
-    var j = 0
-    for g in gw:
-        let w = theta.get(j).unwrap()
-        grad.push(std.math.to_float(g) + w / (c * n))
-        penalty = penalty + w * w
-        j = j + 1
-    for g in gb:
-        grad.push(g)
-    (loss / n + penalty / (2.0 * c * n), grad)
+# of the rows plus `|W|^2 / (2 c n)`. The loop over the rows is native (`std.ml.logistic_objective`).
+fn objective(x: Sparse, target: List[Int], classes: Int, theta: List[Float], c: Float) -> (Float, List[Float]):
+    std.ml.logistic_objective(x, target, theta, classes, c)
 
 # Multinomial logistic regression that minimizes the log loss of the rows plus `|W|^2 / (2 c)`, as scikit-learn's
 # LogisticRegression(C=c) with its lbfgs solver (the intercept is not penalized), with L-BFGS for at most `iterations` steps.
@@ -183,11 +155,10 @@ fn fit_logistic(x: Sparse, y: List[Text], c: Float, iterations: Int) -> Logistic
         at.insert(cl, i)
         i = i + 1
     let target: List[Int] = y |> std.iter.map(v => at.get(v).unwrap())
-    let xt = x.transpose()
     var start: List[Float] = []
     for j in range(f * k + k):
         start.push(0.0)
-    let theta = minimize((t: List[Float]) => objective(x, xt, target, classes, t, c), start, iterations, 1.0e-6)
+    let theta = minimize((t: List[Float]) => objective(x, target, k, t, c), start, iterations, 1.0e-6)
     LogisticRegression(classes: classes, weights: theta.take(f * k), intercept: theta.skip(f * k), features: f)
 
 fn predict_logistic(m: LogisticRegression, x: Sparse) -> List[Text]:

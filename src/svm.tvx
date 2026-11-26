@@ -25,41 +25,15 @@ fn margins(x: Sparse, w: List[Float]) -> List[Float]:
     xw |> std.iter.map(v => std.math.to_float(v) + b)
 
 # The objective of one class and its gradient: |w|^2 / 2 + c * sum of max(0, 1 - y (w x + b))^2 for `y` in {-1, 1}.
-fn objective(x: Sparse, xt: Sparse, y: List[Float], c: Float, w: List[Float]) -> (Float, List[Float]):
-    let f = x.cols()
-    let m = margins(x, w)
-    var loss = 0.0
-    var coef: List[Float] = []
-    var i = 0
-    for v in m:
-        let yi = y.get(i).unwrap()
-        let gap = 1.0 - yi * v
-        if gap > 0.0:
-            loss = loss + gap * gap
-            coef.push(-2.0 * c * yi * gap)
-        else:
-            coef.push(0.0)
-        i = i + 1
-    let gx = std.tensor.to_vec(xt.matmul(column(coef).to_dense()))
-    var grad: List[Float] = []
-    var j = 0
-    for g in gx:
-        grad.push(std.math.to_float(g) + w.get(j).unwrap())
-        j = j + 1
-    var gb = w.get(f).unwrap()
-    for v in coef:
-        gb = gb + v
-    grad.push(gb)
-    var norm = 0.0
-    for v in w:
-        norm = norm + v * v
-    (norm / 2.0 + c * loss, grad)
+# The loop over the rows is native (`std.ml.squared_hinge_objective`).
+fn objective(x: Sparse, y: List[Float], c: Float, w: List[Float]) -> (Float, List[Float]):
+    std.ml.squared_hinge_objective(x, y, w, c)
 
-fn fit_binary(x: Sparse, xt: Sparse, y: List[Float], c: Float, iterations: Int) -> List[Float]:
+fn fit_binary(x: Sparse, y: List[Float], c: Float, iterations: Int) -> List[Float]:
     var start: List[Float] = []
     for j in range(x.cols() + 1):
         start.push(0.0)
-    minimize((w: List[Float]) => objective(x, xt, y, c, w), start, iterations, 1.0e-5)
+    minimize((w: List[Float]) => objective(x, y, c, w), start, iterations, 1.0e-5)
 
 # LinearSVC(C=c). Each class against the rest; two classes give one model, as in scikit-learn.
 fn fit_svc(x: Sparse, y: List[Text], c: Float, iterations: Int) -> LinearSVC:
@@ -67,9 +41,8 @@ fn fit_svc(x: Sparse, y: List[Text], c: Float, iterations: Int) -> LinearSVC:
     for v in y:
         seen.insert(v, 1)
     let classes = seen.keys()
-    let xt = x.transpose()
     var weights: List[Float] = []
-    let fit_for = (positive: Text) => fit_binary(x, xt, y |> std.iter.map(v => 1.0 if v == positive else -1.0), c, iterations)
+    let fit_for = (positive: Text) => fit_binary(x, y |> std.iter.map(v => 1.0 if v == positive else -1.0), c, iterations)
     if classes.len() == 2:
         weights = fit_for(classes.get(1).unwrap())
     else:

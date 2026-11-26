@@ -57,8 +57,12 @@ The TF-IDF values are stored as `f32` in `Sparse`, so their sums agree to about 
 
 ## Speed
 
-Everything runs in the interpreter except the sparse products. Naive Bayes and the vectorizers handle tens of thousands of
-documents in seconds. Forests are the slowest part, at about a second per tree for a few hundred rows; they are made for
-the small tabular data of #251, not for millions of rows.
+The loops over the rows of the heavy models run natively, through four functions of `std.ml`: the objectives of logistic
+regression and of LinearSVC, the E-step of LDA and the direction of L-BFGS. Everything else is Telvax. On 4,000 tweets
+with 3,000 TF-IDF bigram features: logistic regression 2.2 s, LinearSVC 3.0 s, LDA 1.5 s; the whole tweet pipeline on
+5,000 tweets takes 12 s, against 19 s for its Python version. Forests are in Telvax, at about a second per tree for a few
+hundred rows, which suits the small tabular data they are used for.
+
+`learn` needs a Telvax with those functions (the release after 0.48.2).
 
 Licensed under MIT or Apache-2.0, at your choice.

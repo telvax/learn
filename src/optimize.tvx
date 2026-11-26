@@ -36,29 +36,8 @@ fn minimize(f: (List[Float]) -> (Float, List[Float]), start: List[Float], iterat
         let gmax = largest(g)
         if gmax < stop:
             break
-        # The two loops of L-BFGS: the direction from the last corrections.
-        var q = g |> std.iter.map(v => v)
-        let h = std.math.to_int(ss.len())
-        var alphas: List[Float] = []
-        for back in range(h):
-            let idx = h - 1 - back
-            let s = ss.get(idx).unwrap()
-            let yv = ys.get(idx).unwrap()
-            let a = dot(s, q) / dot(yv, s)
-            alphas.push(a)
-            q = axpy(q, -a, yv)
-        var gamma = 1.0 / std.math.max(gmax, 1.0)
-        if h > 0:
-            let s = ss.get(h - 1).unwrap()
-            let yv = ys.get(h - 1).unwrap()
-            gamma = dot(s, yv) / dot(yv, yv)
-        var r = q |> std.iter.map(v => v * gamma)
-        for idx in range(h):
-            let s = ss.get(idx).unwrap()
-            let yv = ys.get(idx).unwrap()
-            let b = dot(yv, r) / dot(yv, s)
-            r = axpy(r, alphas.get(h - 1 - idx).unwrap() - b, s)
-        var dir = r |> std.iter.map(v => -v)
+        # The two loops of L-BFGS, natively: the direction from the last corrections.
+        var dir = std.ml.lbfgs_direction(g, ss, ys)
         var slope = dot(g, dir)
         if slope >= 0.0:
             # Not a descent direction: start again from the gradient.

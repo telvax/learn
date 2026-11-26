@@ -46,41 +46,6 @@ fn rows_of(topic_word: List[Float], k: Int, v: Int) -> List[Float]:
             out.push(x)
     out
 
-# The E-step of one document (`ids`, `counts`): its topic shares, and what it adds to the statistics of each topic.
-fn document(ids: List[Int], counts: List[Float], ew: List[Float], k: Int, v: Int, prior: Float, start: List[Float]) -> (List[Float], List[Float]):
-    let n = std.math.to_int(ids.len())
-    var theta = start
-    var et = expected(theta)
-    var ratio: List[Float] = []
-    for it in range(100):
-        # norm_phi of every word, then the new shares.
-        ratio = []
-        for i in range(n):
-            let w = ids.get(i).unwrap()
-            var phi = 1.0e-300
-            for t in range(k):
-                phi = phi + et.get(t).unwrap() * ew.get(t * v + w).unwrap()
-            ratio.push(counts.get(i).unwrap() / phi)
-        var next: List[Float] = []
-        for t in range(k):
-            var s = 0.0
-            for i in range(n):
-                s = s + ratio.get(i).unwrap() * ew.get(t * v + ids.get(i).unwrap()).unwrap()
-            next.push(et.get(t).unwrap() * s + prior)
-        var change = 0.0
-        for t in range(k):
-            change = change + std.math.abs(next.get(t).unwrap() - theta.get(t).unwrap())
-        theta = next
-        et = expected(theta)
-        if change / std.math.to_float(k) < 1.0e-3:
-            break
-    # The statistics use the last norm_phi, as scikit-learn does.
-    var stats: List[Float] = []
-    for t in range(k):
-        for i in range(n):
-            stats.push(et.get(t).unwrap() * ratio.get(i).unwrap())
-    (theta, stats)
-
 # Fits `topics` topics to a matrix of word counts, in `max_iter` passes (scikit-learn's default is 10).
 fn fit_lda(x: Sparse, topics: Int, max_iter: Int, seed: Int) -> LDA:
     let g = Generator.new(seed)
@@ -93,22 +58,11 @@ fn fit_lda(x: Sparse, topics: Int, max_iter: Int, seed: Int) -> LDA:
     let docs = x.rows()
     for epoch in range(max_iter):
         let ew = rows_of(topic_word, k, v)
-        var stats: List[Float] = []
-        for i in range(k * v):
-            stats.push(0.0)
-        for d in range(docs):
-            let row = x.row(d)
-            let ids = row |> std.iter.map(p => p.0)
-            let counts = row |> std.iter.map(p => p.1)
-            var start: List[Float] = []
-            for t in range(k):
-                start.push(gamma(g, 100.0, 0.01))
-            let (theta, s) = document(ids, counts, ew, k, v, prior, start)
-            let n = std.math.to_int(ids.len())
-            for t in range(k):
-                for i in range(n):
-                    let at = t * v + ids.get(i).unwrap()
-                    stats[at] = stats.get(at).unwrap() + s.get(t * n + i).unwrap()
+        # The E-step of every document, natively (`std.ml.lda_e_step`), from random starts as scikit-learn's.
+        var start: List[Float] = []
+        for i in range(docs * k):
+            start.push(gamma(g, 100.0, 0.01))
+        let (_, stats) = std.ml.lda_e_step(x, ew, k, prior, start)
         # M-step: the prior plus the statistics times exp(E[log beta]).
         var next: List[Float] = []
         for i in range(k * v):
@@ -141,15 +95,13 @@ fn top_words(m: LDA, words: List[Text], n: Int) -> List[List[Text]]:
 # The share of each topic in each document (scikit-learn's `transform`), one list per document.
 fn topic_shares(m: LDA, x: Sparse, seed: Int) -> List[List[Float]]:
     let g = Generator.new(seed)
-    let ew = rows_of(m.topic_word, m.topics, m.words)
-    let prior = 1.0 / std.math.to_float(m.topics)
+    var start: List[Float] = []
+    for i in range(x.rows() * m.topics):
+        start.push(gamma(g, 100.0, 0.01))
+    let (shares, _) = std.ml.lda_e_step(x, rows_of(m.topic_word, m.topics, m.words), m.topics, 1.0 / std.math.to_float(m.topics), start)
     var out: List[List[Float]] = []
     for d in range(x.rows()):
-        let row = x.row(d)
-        var start: List[Float] = []
-        for t in range(m.topics):
-            start.push(gamma(g, 100.0, 0.01))
-        let (theta, _) = document(row |> std.iter.map(p => p.0), row |> std.iter.map(p => p.1), ew, m.topics, m.words, prior, start)
+        let theta = shares.skip(d * m.topics).take(m.topics)
         let total = std.iter.sum(theta)
         out.push(theta |> std.iter.map(t => t / total))
     out

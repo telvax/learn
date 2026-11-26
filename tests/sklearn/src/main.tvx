@@ -1,5 +1,8 @@
 # The models of `learn` on the data of tests/data, printed line by line as reference.py prints scikit-learn's.
-from learn.text import fit_counts, fit_tfidf, transform
+from learn.text import fit_counts, fit_tfidf, transform, fit_tfidf_with, fit_counts_with, Options
+from learn.stop_words import english_stop_words
+from learn.lda import fit_lda, top_words
+from learn.svm import fit_svc, predict_svc, decision
 from learn.bayes import fit_multinomial, fit_complement, predict
 from learn.tree import fit_forest_classifier, fit_forest_regressor, predict_classes, predict_values
 from learn.linear import fit_linear, predict_linear, fit_logistic, predict_logistic, probabilities, sparse_rows
@@ -53,6 +56,17 @@ fn text_models(data: Text) -> List[Text]:
     out.push(f"cnb acc={six(accuracy(test.label, cnb))} {std.text.join(cnb.take(30), ",")}")
     let mnb_t = predict(fit_multinomial(xt, train.label, 0.1), transform(tv, test.text))
     out.push(f"mnb-tfidf acc={six(accuracy(test.label, mnb_t))}")
+    # The vectorizer of tweet-sentiment-analysis, and LinearSVC on it.
+    let pipeline = Options(max_features: 40, max_df: 0.85, min_df: 1, ngram_max: 2, stop_words: [], sublinear_tf: True)
+    let tw = fit_tfidf_with(train.text, pipeline)
+    let x2 = transform(tw, train.text)
+    out.push(f"pipeline-tfidf {std.text.join(tw.words, ",")} total={std.iter.sum(x2.row_sums()):.4f}")
+    let topics = Options(max_features: 0, max_df: 0.85, min_df: 1, ngram_max: 1, stop_words: english_stop_words(), sublinear_tf: False)
+    out.push(f"lda-counts {std.text.join(fit_counts_with(train.text, topics).words, ",")}")
+    let svc = fit_svc(x2, train.label, 1.0, 1000)
+    let xt2 = transform(tw, test.text)
+    let d = decision(svc, xt2)
+    out.push(f"svc acc={accuracy(test.label, predict_svc(svc, xt2)):.3f} d00={d.get(0).unwrap().get(0).unwrap():.3f} d11={d.get(1).unwrap().get(1).unwrap():.3f}")
     out
 
 # The mean log loss of predicted probabilities.
@@ -112,5 +126,40 @@ fn forests(data: Text) -> List[Text]:
     out.push(f"forest-diabetes r2={std.ml.r2(y.skip(342), predict_values(fr, x.skip(342))):.3f}")
     out
 
-fn main(data: Text = "../data") -> Text:
-    std.text.join(text_models(data) + linear_models(data) + forests(data), "\n")
+# Whether each topic's five heaviest words all belong to one of the three themes of the corpus, and which themes were found.
+fn topic_themes(topics: List[List[Text]]) -> Text:
+    let themes: Map[Text, Text] = std.map.new()
+    for w in "goal match team player coach league score win season stadium ball referee".split(" "):
+        themes.insert(w, "sport")
+    for w in "software computer data code network chip cloud model server app startup robot".split(" "):
+        themes.insert(w, "tech")
+    for w in "recipe cook kitchen flavor bread cheese wine dinner sauce garden fresh taste".split(" "):
+        themes.insert(w, "food")
+    var found: List[Text] = []
+    for t in topics:
+        let names = t.take(5) |> std.iter.map(w => themes.get(w).unwrap_or("none"))
+        if names.all(n => n == names.get(0).unwrap()):
+            found.push(names.get(0).unwrap())
+        else:
+            found.push("mixed")
+    found.sort()
+    std.text.join(found, ",")
+
+fn lda_models(data: Text) -> List[Text]:
+    let t: Table[Doc] = std.table.read_csv(data + "/corpus.csv")
+    let o = Options(max_features: 0, max_df: 0.85, min_df: 1, ngram_max: 1, stop_words: english_stop_words(), sublinear_tf: False)
+    let v = fit_counts_with(t.text, o)
+    let m = fit_lda(transform(v, t.text), 3, 10, 42)
+    [f"lda-topics {topic_themes(top_words(m, v.words, 10))}"]
+
+fn main(data: Text = "../data", part: Text = "all") -> Text:
+    var out: List[Text] = []
+    if part == "all" or part == "text":
+        out = out + text_models(data)
+    if part == "all" or part == "linear":
+        out = out + linear_models(data)
+    if part == "all" or part == "lda":
+        out = out + lda_models(data)
+    if part == "all" or part == "forests":
+        out = out + forests(data)
+    std.text.join(out, "\n")

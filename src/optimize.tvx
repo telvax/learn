@@ -1,0 +1,98 @@
+# L-BFGS: the minimum of a smooth function, from its value and gradient.
+
+fn dot(a: List[Float], b: List[Float]) -> Float:
+    var s = 0.0
+    var i = 0
+    for v in a:
+        s = s + v * b.get(i).unwrap()
+        i = i + 1
+    s
+
+# `a + k b`.
+fn axpy(a: List[Float], k: Float, b: List[Float]) -> List[Float]:
+    var out: List[Float] = []
+    var i = 0
+    for v in a:
+        out.push(v + k * b.get(i).unwrap())
+        i = i + 1
+    out
+
+fn largest(g: List[Float]) -> Float:
+    var m = 0.0
+    for v in g:
+        m = std.math.max(m, std.math.abs(v))
+    m
+
+# Minimizes `f` (which gives the value and the gradient) from `start`: L-BFGS with ten corrections and a backtracking line
+# search, until the largest part of the gradient is under `tol` times what it was at the start (or 1), no step lowers the
+# value any more, the value moves by less than 2.2e-9 of itself, or after `iterations` steps.
+fn minimize(f: (List[Float]) -> (Float, List[Float]), start: List[Float], iterations: Int, tol: Float) -> List[Float]:
+    var theta = start
+    var (fx, g) = f(theta)
+    let stop = tol * std.math.max(1.0, largest(g))
+    var ss: List[List[Float]] = []
+    var ys: List[List[Float]] = []
+    for it in range(iterations):
+        let gmax = largest(g)
+        if gmax < stop:
+            break
+        # The two loops of L-BFGS: the direction from the last corrections.
+        var q = g |> std.iter.map(v => v)
+        let h = std.math.to_int(ss.len())
+        var alphas: List[Float] = []
+        for back in range(h):
+            let idx = h - 1 - back
+            let s = ss.get(idx).unwrap()
+            let yv = ys.get(idx).unwrap()
+            let a = dot(s, q) / dot(yv, s)
+            alphas.push(a)
+            q = axpy(q, -a, yv)
+        var gamma = 1.0 / std.math.max(gmax, 1.0)
+        if h > 0:
+            let s = ss.get(h - 1).unwrap()
+            let yv = ys.get(h - 1).unwrap()
+            gamma = dot(s, yv) / dot(yv, yv)
+        var r = q |> std.iter.map(v => v * gamma)
+        for idx in range(h):
+            let s = ss.get(idx).unwrap()
+            let yv = ys.get(idx).unwrap()
+            let b = dot(yv, r) / dot(yv, s)
+            r = axpy(r, alphas.get(h - 1 - idx).unwrap() - b, s)
+        var dir = r |> std.iter.map(v => -v)
+        var slope = dot(g, dir)
+        if slope >= 0.0:
+            # Not a descent direction: start again from the gradient.
+            dir = g |> std.iter.map(v => -v)
+            slope = dot(g, dir)
+            ss = []
+            ys = []
+        var step = 1.0
+        var next = axpy(theta, step, dir)
+        var (fn_, gn) = f(next)
+        var tries = 0
+        while fn_ > fx + 1.0e-4 * step * slope and tries < 40:
+            step = step / 2.0
+            next = axpy(theta, step, dir)
+            let (a2, b2) = f(next)
+            fn_ = a2
+            gn = b2
+            tries = tries + 1
+        # No step lowers the value (the gradient is only as exact as the arithmetic): it is the minimum.
+        if fn_ > fx + 1.0e-4 * step * slope:
+            break
+        let s = axpy(next, -1.0, theta)
+        let yv = axpy(gn, -1.0, g)
+        if dot(s, yv) > 1.0e-12:
+            ss.push(s)
+            ys.push(yv)
+            if ss.len() > 10:
+                ss = ss.skip(1)
+                ys = ys.skip(1)
+        theta = next
+        # The value hardly moves any more (scipy's `ftol`, which scikit-learn's lbfgs uses): it is the minimum.
+        let moved = (fx - fn_) / std.math.max(std.math.max(std.math.abs(fx), std.math.abs(fn_)), 1.0)
+        fx = fn_
+        g = gn
+        if moved <= 2.2e-9:
+            break
+    theta

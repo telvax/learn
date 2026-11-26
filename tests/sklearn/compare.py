@@ -4,7 +4,7 @@ import re, sys
 mine = dict(l.split(" ", 1) for l in open(sys.argv[1]).read().splitlines() if " " in l)
 theirs = dict(l.split(" ", 1) for l in open(sys.argv[2]).read().splitlines() if " " in l)
 close = {"logistic-text": {"acc": 0.02, "loss": 0.005}, "logistic-iris": {"acc": 0.02, "loss": 0.005},
-         "forest-iris": {"acc": -0.07}, "forest-diabetes": {"r2": -0.08}}
+         "forest-iris": {"acc": -0.07}, "svc": {"acc": 0.01, "d00": 0.005, "d11": 0.005}, "forest-diabetes": {"r2": -0.08}}
 bad = []
 for key, want in theirs.items():
     got = mine.get(key)

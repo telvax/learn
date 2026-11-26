@@ -1,0 +1,102 @@
+# A linear support vector machine, as scikit-learn's LinearSVC: the squared hinge loss with an L2 penalty and `C`, the
+# intercept as one more feature of value 1 (penalized like the others), one model per class against the rest.
+from std.sparse import Sparse
+from optimize import minimize
+
+# `weights` has one row of `features + 1` values per class (the last one is the intercept), row after row.
+type LinearSVC:
+    classes: List[Text]
+    weights: List[Float]
+    features: Int
+
+fn column(values: List[Float]) -> Sparse:
+    var t: List[(Int, Int, Float)] = []
+    var i = 0
+    for v in values:
+        t.push((i, 0, v))
+        i = i + 1
+    std.sparse.from_triplets(values.len(), 1, t)
+
+# The decision values of one class for every row.
+fn margins(x: Sparse, w: List[Float]) -> List[Float]:
+    let f = x.cols()
+    let xw = std.tensor.to_vec(x.matmul(column(w.take(f)).to_dense()))
+    let b = w.get(f).unwrap()
+    xw |> std.iter.map(v => std.math.to_float(v) + b)
+
+# The objective of one class and its gradient: |w|^2 / 2 + c * sum of max(0, 1 - y (w x + b))^2 for `y` in {-1, 1}.
+fn objective(x: Sparse, xt: Sparse, y: List[Float], c: Float, w: List[Float]) -> (Float, List[Float]):
+    let f = x.cols()
+    let m = margins(x, w)
+    var loss = 0.0
+    var coef: List[Float] = []
+    var i = 0
+    for v in m:
+        let yi = y.get(i).unwrap()
+        let gap = 1.0 - yi * v
+        if gap > 0.0:
+            loss = loss + gap * gap
+            coef.push(-2.0 * c * yi * gap)
+        else:
+            coef.push(0.0)
+        i = i + 1
+    let gx = std.tensor.to_vec(xt.matmul(column(coef).to_dense()))
+    var grad: List[Float] = []
+    var j = 0
+    for g in gx:
+        grad.push(std.math.to_float(g) + w.get(j).unwrap())
+        j = j + 1
+    var gb = w.get(f).unwrap()
+    for v in coef:
+        gb = gb + v
+    grad.push(gb)
+    var norm = 0.0
+    for v in w:
+        norm = norm + v * v
+    (norm / 2.0 + c * loss, grad)
+
+fn fit_binary(x: Sparse, xt: Sparse, y: List[Float], c: Float, iterations: Int) -> List[Float]:
+    var start: List[Float] = []
+    for j in range(x.cols() + 1):
+        start.push(0.0)
+    minimize((w: List[Float]) => objective(x, xt, y, c, w), start, iterations, 1.0e-5)
+
+# LinearSVC(C=c). Each class against the rest; two classes give one model, as in scikit-learn.
+fn fit_svc(x: Sparse, y: List[Text], c: Float, iterations: Int) -> LinearSVC:
+    let seen: Map[Text, Int] = std.map.new()
+    for v in y:
+        seen.insert(v, 1)
+    let classes = seen.keys()
+    let xt = x.transpose()
+    var weights: List[Float] = []
+    let fit_for = (positive: Text) => fit_binary(x, xt, y |> std.iter.map(v => 1.0 if v == positive else -1.0), c, iterations)
+    if classes.len() == 2:
+        weights = fit_for(classes.get(1).unwrap())
+    else:
+        for cl in classes:
+            for v in fit_for(cl):
+                weights.push(v)
+    LinearSVC(classes: classes, weights: weights, features: x.cols())
+
+# The decision value of every class (one value for two classes) for every row, row after row.
+fn decision(m: LinearSVC, x: Sparse) -> List[List[Float]]:
+    let width = m.features + 1
+    let models = std.math.to_int(m.weights.len()) / width
+    var out: List[List[Float]] = []
+    for k in range(models):
+        out.push(margins(x, m.weights.skip(k * width).take(width)))
+    out
+
+fn predict_svc(m: LinearSVC, x: Sparse) -> List[Text]:
+    let d = decision(m, x)
+    var out: List[Text] = []
+    for r in range(x.rows()):
+        if d.len() == 1:
+            out.push(m.classes.get(1 if d.get(0).unwrap().get(r).unwrap() > 0.0 else 0).unwrap())
+        else:
+            var best = 0
+            for k in range(std.math.to_int(d.len())):
+                if d.get(k).unwrap().get(r).unwrap() > d.get(best).unwrap().get(r).unwrap():
+                    best = k
+            out.push(m.classes.get(best).unwrap())
+    out

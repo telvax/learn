@@ -23,6 +23,12 @@ p = ComplementNB(alpha=1.0).fit(xc, y).predict(xtest)
 print(f"cnb acc={s(accuracy_score(yt, p))} {','.join(p[:30])}")
 p = MultinomialNB(alpha=0.1).fit(xt, y).predict(tv.transform(Xt))
 print(f"mnb-tfidf acc={s(accuracy_score(yt, p))}")
+from sklearn.svm import LinearSVC
+tw = TfidfVectorizer(max_df=0.85, max_features=40, ngram_range=(1, 2), sublinear_tf=True); x2 = tw.fit_transform(X)
+print(f"pipeline-tfidf {','.join(tw.get_feature_names_out())} total={x2.sum():.4f}")
+print(f"lda-counts {','.join(CountVectorizer(max_df=0.85, stop_words='english').fit(X).get_feature_names_out())}")
+svc = LinearSVC(random_state=42).fit(x2, y); xt2 = tw.transform(Xt); d = svc.decision_function(xt2)
+print(f"svc acc={accuracy_score(yt, svc.predict(xt2)):.3f} d00={d[0][0]:.3f} d11={d[1][1]:.3f}")
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import r2_score, log_loss
 d = list(csv.DictReader(open(f"{data}/diabetes.csv")))
@@ -42,3 +48,15 @@ rf = RandomForestClassifier(n_estimators=50, random_state=42).fit(xi[tr], [yi[i]
 print(f"forest-iris acc={accuracy_score([yi[i] for i in te], rf.predict(xi[te])):.3f}")
 fr = RandomForestRegressor(n_estimators=30, random_state=42).fit(x[:342], yd[:342])
 print(f"forest-diabetes r2={r2_score(yd[342:], fr.predict(x[342:])):.3f}")
+from sklearn.decomposition import LatentDirichletAllocation
+themes = {}
+for name, words in {"sport": "goal match team player coach league score win season stadium ball referee", "tech": "software computer data code network chip cloud model server app startup robot", "food": "recipe cook kitchen flavor bread cheese wine dinner sauce garden fresh taste"}.items():
+    for w in words.split():
+        themes[w] = name
+cvl = CountVectorizer(max_df=0.85, stop_words="english"); xl = cvl.fit_transform([r["text"] for r in rows])
+lda = LatentDirichletAllocation(n_components=3, random_state=42).fit(xl)
+names = cvl.get_feature_names_out(); found = []
+for topic in lda.components_:
+    top = [themes.get(names[i], "none") for i in topic.argsort()[::-1][:5]]
+    found.append(top[0] if all(n == top[0] for n in top) else "mixed")
+print(f"lda-topics {','.join(sorted(found))}")

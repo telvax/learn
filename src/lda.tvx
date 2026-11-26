@@ -1,0 +1,155 @@
+# Latent Dirichlet Allocation, as scikit-learn's LatentDirichletAllocation with learning_method="batch": variational Bayes,
+# the priors 1 / topics, `max_iter` passes over the documents, each document updated until its topic shares change by
+# less than 1e-3 on average (at most 100 times). The start is drawn from Gamma(100, 0.01) with the seed, so the topics are
+# close to scikit-learn's for the same data, not the same.
+from std.sparse import Sparse
+from std.random import Generator
+
+# `topic_word` has one row of `words` values per topic, row after row (scikit-learn's `components_`).
+type LDA:
+    topics: Int
+    words: Int
+    topic_word: List[Float]
+
+# A standard normal draw (the polar method of Marsaglia).
+fn normal(g: Generator) -> Float:
+    while True:
+        let u = 2.0 * g.float() - 1.0
+        let w = 2.0 * g.float() - 1.0
+        let s = u * u + w * w
+        if s > 0.0 and s < 1.0:
+            return u * std.math.sqrt(-2.0 * std.math.ln(s) / s)
+    0.0
+
+# A draw of Gamma(shape, scale) for a shape of at least 1 (Marsaglia and Tsang).
+fn gamma(g: Generator, shape: Float, scale: Float) -> Float:
+    let d = shape - 1.0 / 3.0
+    let c = 1.0 / std.math.sqrt(9.0 * d)
+    while True:
+        let z = normal(g)
+        let v = std.math.pow(1.0 + c * z, 3.0)
+        if v > 0.0:
+            let u = std.math.max(g.float(), 1.0e-300)
+            if std.math.ln(u) < 0.5 * z * z + d - d * v + d * std.math.ln(v):
+                return d * v * scale
+    0.0
+
+# exp(E[log theta]) of a Dirichlet with parameters `alpha`: exp(digamma(a) - digamma(sum)).
+fn expected(alpha: List[Float]) -> List[Float]:
+    let total = std.math.digamma(std.iter.sum(alpha))
+    alpha |> std.iter.map(a => std.math.exp(std.math.digamma(a) - total))
+
+fn rows_of(topic_word: List[Float], k: Int, v: Int) -> List[Float]:
+    var out: List[Float] = []
+    for t in range(k):
+        for x in expected(topic_word.skip(t * v).take(v)):
+            out.push(x)
+    out
+
+# The E-step of one document (`ids`, `counts`): its topic shares, and what it adds to the statistics of each topic.
+fn document(ids: List[Int], counts: List[Float], ew: List[Float], k: Int, v: Int, prior: Float, start: List[Float]) -> (List[Float], List[Float]):
+    let n = std.math.to_int(ids.len())
+    var theta = start
+    var et = expected(theta)
+    var ratio: List[Float] = []
+    for it in range(100):
+        # norm_phi of every word, then the new shares.
+        ratio = []
+        for i in range(n):
+            let w = ids.get(i).unwrap()
+            var phi = 1.0e-300
+            for t in range(k):
+                phi = phi + et.get(t).unwrap() * ew.get(t * v + w).unwrap()
+            ratio.push(counts.get(i).unwrap() / phi)
+        var next: List[Float] = []
+        for t in range(k):
+            var s = 0.0
+            for i in range(n):
+                s = s + ratio.get(i).unwrap() * ew.get(t * v + ids.get(i).unwrap()).unwrap()
+            next.push(et.get(t).unwrap() * s + prior)
+        var change = 0.0
+        for t in range(k):
+            change = change + std.math.abs(next.get(t).unwrap() - theta.get(t).unwrap())
+        theta = next
+        et = expected(theta)
+        if change / std.math.to_float(k) < 1.0e-3:
+            break
+    # The statistics use the last norm_phi, as scikit-learn does.
+    var stats: List[Float] = []
+    for t in range(k):
+        for i in range(n):
+            stats.push(et.get(t).unwrap() * ratio.get(i).unwrap())
+    (theta, stats)
+
+# Fits `topics` topics to a matrix of word counts, in `max_iter` passes (scikit-learn's default is 10).
+fn fit_lda(x: Sparse, topics: Int, max_iter: Int, seed: Int) -> LDA:
+    let g = Generator.new(seed)
+    let k = topics
+    let v = x.cols()
+    let prior = 1.0 / std.math.to_float(k)
+    var topic_word: List[Float] = []
+    for i in range(k * v):
+        topic_word.push(gamma(g, 100.0, 0.01))
+    let docs = x.rows()
+    for epoch in range(max_iter):
+        let ew = rows_of(topic_word, k, v)
+        var stats: List[Float] = []
+        for i in range(k * v):
+            stats.push(0.0)
+        for d in range(docs):
+            let row = x.row(d)
+            let ids = row |> std.iter.map(p => p.0)
+            let counts = row |> std.iter.map(p => p.1)
+            var start: List[Float] = []
+            for t in range(k):
+                start.push(gamma(g, 100.0, 0.01))
+            let (theta, s) = document(ids, counts, ew, k, v, prior, start)
+            let n = std.math.to_int(ids.len())
+            for t in range(k):
+                for i in range(n):
+                    let at = t * v + ids.get(i).unwrap()
+                    stats[at] = stats.get(at).unwrap() + s.get(t * n + i).unwrap()
+        # M-step: the prior plus the statistics times exp(E[log beta]).
+        var next: List[Float] = []
+        for i in range(k * v):
+            next.push(prior + stats.get(i).unwrap() * ew.get(i).unwrap())
+        topic_word = next
+    LDA(topics: k, words: v, topic_word: topic_word)
+
+# The indices of the `n` largest values, largest first (the first wins a tie).
+fn top(values: List[Float], n: Int) -> List[Int]:
+    var chosen: List[Int] = []
+    var taken: Map[Int, Int] = std.map.new()
+    for r in range(std.math.min(n, std.math.to_int(values.len()))):
+        var best = -1
+        var i = 0
+        for x in values:
+            if not taken.contains_key(i) and (best < 0 or x > values.get(best).unwrap()):
+                best = i
+            i = i + 1
+        taken.insert(best, 1)
+        chosen.push(best)
+    chosen
+
+# The `n` heaviest words of each topic, with the words of the vectorizer.
+fn top_words(m: LDA, words: List[Text], n: Int) -> List[List[Text]]:
+    var out: List[List[Text]] = []
+    for t in range(m.topics):
+        out.push(top(m.topic_word.skip(t * m.words).take(m.words), n) |> std.iter.map(i => words.get(i).unwrap()))
+    out
+
+# The share of each topic in each document (scikit-learn's `transform`), one list per document.
+fn topic_shares(m: LDA, x: Sparse, seed: Int) -> List[List[Float]]:
+    let g = Generator.new(seed)
+    let ew = rows_of(m.topic_word, m.topics, m.words)
+    let prior = 1.0 / std.math.to_float(m.topics)
+    var out: List[List[Float]] = []
+    for d in range(x.rows()):
+        let row = x.row(d)
+        var start: List[Float] = []
+        for t in range(m.topics):
+            start.push(gamma(g, 100.0, 0.01))
+        let (theta, _) = document(row |> std.iter.map(p => p.0), row |> std.iter.map(p => p.1), ew, m.topics, m.words, prior, start)
+        let total = std.iter.sum(theta)
+        out.push(theta |> std.iter.map(t => t / total))
+    out

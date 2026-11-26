@@ -1,6 +1,7 @@
 # Linear models: least squares (scikit-learn's LinearRegression) and multinomial logistic regression with an L2 penalty
 # (LogisticRegression with C), on rows of numbers or on a sparse matrix.
 from std.sparse import Sparse
+from optimize import minimize
 
 # A length as an `Int`.
 fn int(n: u64) -> Int:
@@ -137,23 +138,6 @@ fn probabilities(m: LogisticRegression, x: Sparse) -> List[Float]:
             out.push(v / total)
     out
 
-fn dot(a: List[Float], b: List[Float]) -> Float:
-    var s = 0.0
-    var i = 0
-    for v in a:
-        s = s + v * b.get(i).unwrap()
-        i = i + 1
-    s
-
-# `a + k b`.
-fn axpy(a: List[Float], k: Float, b: List[Float]) -> List[Float]:
-    var out: List[Float] = []
-    var i = 0
-    for v in a:
-        out.push(v + k * b.get(i).unwrap())
-        i = i + 1
-    out
-
 # The objective and its gradient at `theta` (the weights, feature after feature, then the intercepts): the mean log loss
 # of the rows plus `|W|^2 / (2 c n)`.
 fn objective(x: Sparse, xt: Sparse, target: List[Int], classes: List[Text], theta: List[Float], c: Float) -> (Float, List[Float]):
@@ -188,8 +172,7 @@ fn objective(x: Sparse, xt: Sparse, target: List[Int], classes: List[Text], thet
     (loss / n + penalty / (2.0 * c * n), grad)
 
 # Multinomial logistic regression that minimizes the log loss of the rows plus `|W|^2 / (2 c)`, as scikit-learn's
-# LogisticRegression(C=c) with its lbfgs solver (the intercept is not penalized): L-BFGS with ten corrections and a
-# backtracking line search, until the largest part of the gradient is under 1e-6 or after `iterations` steps.
+# LogisticRegression(C=c) with its lbfgs solver (the intercept is not penalized), with L-BFGS for at most `iterations` steps.
 fn fit_logistic(x: Sparse, y: List[Text], c: Float, iterations: Int) -> LogisticRegression:
     let classes = classes_of(y)
     let k = int(classes.len())
@@ -201,71 +184,10 @@ fn fit_logistic(x: Sparse, y: List[Text], c: Float, iterations: Int) -> Logistic
         i = i + 1
     let target: List[Int] = y |> std.iter.map(v => at.get(v).unwrap())
     let xt = x.transpose()
-    var theta: List[Float] = []
+    var start: List[Float] = []
     for j in range(f * k + k):
-        theta.push(0.0)
-    var (fx, g) = objective(x, xt, target, classes, theta, c)
-    var ss: List[List[Float]] = []
-    var ys: List[List[Float]] = []
-    for it in range(iterations):
-        var gmax = 0.0
-        for v in g:
-            gmax = std.math.max(gmax, std.math.abs(v))
-        if gmax < 1.0e-6:
-            break
-        # The two loops of L-BFGS: the direction from the last corrections.
-        var q = g |> std.iter.map(v => v)
-        let h = int(ss.len())
-        var alphas: List[Float] = []
-        for back in range(h):
-            let idx = h - 1 - back
-            let s = ss.get(idx).unwrap()
-            let yv = ys.get(idx).unwrap()
-            let a = dot(s, q) / dot(yv, s)
-            alphas.push(a)
-            q = axpy(q, -a, yv)
-        var gamma = 1.0 / std.math.max(gmax, 1.0)
-        if h > 0:
-            let s = ss.get(h - 1).unwrap()
-            let yv = ys.get(h - 1).unwrap()
-            gamma = dot(s, yv) / dot(yv, yv)
-        var r = q |> std.iter.map(v => v * gamma)
-        for idx in range(h):
-            let s = ss.get(idx).unwrap()
-            let yv = ys.get(idx).unwrap()
-            let bta = dot(yv, r) / dot(yv, s)
-            r = axpy(r, alphas.get(h - 1 - idx).unwrap() - bta, s)
-        let d = r |> std.iter.map(v => -v)
-        var slope = dot(g, d)
-        var dir = d
-        if slope >= 0.0:
-            # Not a descent direction: start again from the gradient.
-            dir = g |> std.iter.map(v => -v)
-            slope = dot(g, dir)
-            ss = []
-            ys = []
-        var step = 1.0
-        var next = axpy(theta, step, dir)
-        var (fn_, gn) = objective(x, xt, target, classes, next, c)
-        var tries = 0
-        while fn_ > fx + 1.0e-4 * step * slope and tries < 40:
-            step = step / 2.0
-            next = axpy(theta, step, dir)
-            let (a2, b2) = objective(x, xt, target, classes, next, c)
-            fn_ = a2
-            gn = b2
-            tries = tries + 1
-        let s = axpy(next, -1.0, theta)
-        let yv = axpy(gn, -1.0, g)
-        if dot(s, yv) > 1.0e-12:
-            ss.push(s)
-            ys.push(yv)
-            if ss.len() > 10:
-                ss = ss.skip(1)
-                ys = ys.skip(1)
-        theta = next
-        fx = fn_
-        g = gn
+        start.push(0.0)
+    let theta = minimize((t: List[Float]) => objective(x, xt, target, classes, t, c), start, iterations, 1.0e-6)
     LogisticRegression(classes: classes, weights: theta.take(f * k), intercept: theta.skip(f * k), features: f)
 
 fn predict_logistic(m: LogisticRegression, x: Sparse) -> List[Text]:

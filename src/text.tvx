@@ -1,70 +1,136 @@
-# Text to features, as scikit-learn's CountVectorizer and TfidfVectorizer with their defaults: lower case, tokens of two or
-# more word characters, the vocabulary in alphabetical order, and for TF-IDF the smooth idf and rows of length 1.
+# Text to features, as scikit-learn's CountVectorizer and TfidfVectorizer: lower case, tokens of two or more word characters,
+# stop words, n-grams, document frequency limits, the most frequent terms, and for TF-IDF the smooth idf, an optional
+# sublinear tf, and rows of length 1. The vocabulary is in alphabetical order.
 from std.sparse import Sparse
+from stop_words import english_stop_words
 
-# What `fit_counts` or `fit_tfidf` learned. `idf` is empty for counts.
+# How to read the texts. `options()` gives scikit-learn's defaults.
+type Options:
+    # Keep the most frequent terms only; 0 keeps them all.
+    max_features: Int
+    # Drop terms in more than this share of the texts (1.0 keeps them all), or in fewer than `min_df` texts.
+    max_df: Float
+    min_df: Int
+    # Terms of 1 to `ngram_max` tokens (2 adds the pairs of neighbouring tokens).
+    ngram_max: Int
+    # Tokens left out before the n-grams are made: `english_stop_words()` or your own.
+    stop_words: List[Text]
+    # TF-IDF only: 1 + ln(count) instead of the count.
+    sublinear_tf: Bool
+
+# What a vectorizer learned. `idf` is empty for counts.
 type Vectorizer:
     words: List[Text]
     index: Map[Text, Int]
     idf: List[Float]
+    ngram_max: Int
+    stop_words: List[Text]
+    sublinear_tf: Bool
+
+fn options() -> Options:
+    Options(max_features: 0, max_df: 1.0, min_df: 1, ngram_max: 1, stop_words: [], sublinear_tf: False)
 
 # The tokens of a text: runs of two or more letters, digits or `_`, in lower case.
 fn tokenize(text: Text) -> List[Text]:
     std.text.find_all(text.to_lowercase(), "\\b\\w\\w+\\b")
 
-fn vocabulary(texts: List[Text], max_features: Int) -> Vectorizer:
+# The terms of a text: its tokens without the stop words, and their n-grams up to `ngram_max`.
+fn terms(text: Text, ngram_max: Int, stop: Map[Text, Int]) -> List[Text]:
+    var tokens: List[Text] = []
+    for t in tokenize(text):
+        if not stop.contains_key(t):
+            tokens.push(t)
+    if ngram_max <= 1:
+        return tokens
+    var out = tokens.take(tokens.len())
+    let n = std.math.to_int(tokens.len())
+    for size in range(2, ngram_max + 1):
+        for i in range(n - size + 1):
+            out.push(std.text.join(tokens.skip(i).take(size), " "))
+    out
+
+fn stop_map(words: List[Text]) -> Map[Text, Int]:
+    let m: Map[Text, Int] = std.map.new()
+    for w in words:
+        m.insert(w, 1)
+    m
+
+fn vocabulary(texts: List[Text], o: Options) -> Vectorizer:
+    let stop = stop_map(o.stop_words)
     let freq: Map[Text, Int] = std.map.new()
+    let df: Map[Text, Int] = std.map.new()
     for t in texts:
-        for w in tokenize(t):
+        let seen: Map[Text, Int] = std.map.new()
+        for w in terms(t, o.ngram_max, stop):
             freq.insert(w, freq.get(w).unwrap_or(0) + 1)
-    let words: List[Text] = []
-    if max_features <= 0 or max_features >= freq.len():
-        for w in freq.keys():
-            words.push(w)
-    else:
-        # The `max_features` most frequent words (ties by word), then in alphabetical order.
-        let ranked: List[Text] = []
-        for w, n in freq.entries():
-            ranked.push(f"{1000000000 - n:010d}\t{w}")
+            if not seen.contains_key(w):
+                seen.insert(w, 1)
+                df.insert(w, df.get(w).unwrap_or(0) + 1)
+    # The document frequency limits first, then the most frequent of what is left, as scikit-learn does.
+    let high = o.max_df * std.math.to_float(texts.len())
+    var kept: List[Text] = []
+    for w, n in df.entries():
+        if std.math.to_float(n) <= high and n >= o.min_df:
+            kept.push(w)
+    var words: List[Text] = kept
+    if o.max_features > 0 and o.max_features < std.math.to_int(kept.len()):
+        var ranked: List[Text] = []
+        for w in kept:
+            ranked.push(f"{1000000000 - freq.get(w).unwrap():010d}\t{w}")
         ranked.sort()
-        for key in ranked.take(max_features):
-            words.push(key.split("\t").get(1).unwrap())
+        words = ranked.take(o.max_features) |> std.iter.map(k => k.split("\t").get(1).unwrap())
         words.sort()
     let index: Map[Text, Int] = std.map.new()
     var i = 0
     for w in words:
         index.insert(w, i)
         i = i + 1
-    Vectorizer(words: words, index: index, idf: [])
+    Vectorizer(words: words, index: index, idf: [], ngram_max: o.ngram_max, stop_words: o.stop_words, sublinear_tf: o.sublinear_tf)
 
-# How many times each word of the vocabulary is in each text, as a sparse matrix with one row per text.
-fn counts(v: Vectorizer, texts: List[Text]) -> Sparse:
+# How many times each term of the vocabulary is in each text (1 + ln of it with `sublinear`), one row per text.
+fn term_counts(v: Vectorizer, texts: List[Text], sublinear: Bool) -> Sparse:
+    let stop = stop_map(v.stop_words)
     let rows: List[List[(Int, Float)]] = []
     for t in texts:
-        let row: List[(Int, Float)] = []
-        for w in tokenize(t):
+        let c: Map[Int, Float] = std.map.new()
+        for w in terms(t, v.ngram_max, stop):
             match v.index.get(w):
                 case Some(j):
-                    row.push((j, 1.0))
+                    c.insert(j, c.get(j).unwrap_or(0.0) + 1.0)
                 case None:
                     pass
+        var row: List[(Int, Float)] = []
+        for j, n in c.entries():
+            row.push((j, 1.0 + std.math.ln(n) if sublinear else n))
         rows.push(row)
     std.sparse.from_rows(rows, v.words.len())
 
-# A vocabulary of word counts. `max_features` keeps the most frequent words; 0 keeps them all.
-fn fit_counts(texts: List[Text], max_features: Int) -> Vectorizer:
-    vocabulary(texts, max_features)
+fn counts(v: Vectorizer, texts: List[Text]) -> Sparse:
+    term_counts(v, texts, False)
 
-# A vocabulary with the idf of each word: ln((1 + n) / (1 + df)) + 1.
-fn fit_tfidf(texts: List[Text], max_features: Int) -> Vectorizer:
-    let v = vocabulary(texts, max_features)
+# A vocabulary of term counts, with `o`.
+fn fit_counts_with(texts: List[Text], o: Options) -> Vectorizer:
+    vocabulary(texts, o)
+
+# A TF-IDF vectorizer with `o`: the idf of each term is ln((1 + n) / (1 + df)) + 1.
+fn fit_tfidf_with(texts: List[Text], o: Options) -> Vectorizer:
+    let v = vocabulary(texts, o)
     let n = std.math.to_float(texts.len())
     let idf = counts(v, texts).col_counts() |> std.iter.map(df => std.math.ln((1.0 + n) / (1.0 + std.math.to_float(df))) + 1.0)
-    Vectorizer(words: v.words, index: v.index, idf: idf)
+    Vectorizer(words: v.words, index: v.index, idf: idf, ngram_max: v.ngram_max, stop_words: v.stop_words, sublinear_tf: v.sublinear_tf)
 
-# The features of texts: counts, or for a TF-IDF vectorizer the counts times the idf, each row divided by its length.
+# A vocabulary of word counts with the defaults; `max_features` keeps the most frequent words, 0 keeps them all.
+fn fit_counts(texts: List[Text], max_features: Int) -> Vectorizer:
+    let o = options()
+    fit_counts_with(texts, Options(max_features: max_features, max_df: o.max_df, min_df: o.min_df, ngram_max: o.ngram_max, stop_words: o.stop_words, sublinear_tf: o.sublinear_tf))
+
+# A TF-IDF vectorizer with the defaults.
+fn fit_tfidf(texts: List[Text], max_features: Int) -> Vectorizer:
+    let o = options()
+    fit_tfidf_with(texts, Options(max_features: max_features, max_df: o.max_df, min_df: o.min_df, ngram_max: o.ngram_max, stop_words: o.stop_words, sublinear_tf: o.sublinear_tf))
+
+# The features of texts: counts, or for a TF-IDF vectorizer the (sublinear) counts times the idf, each row of length 1.
 fn transform(v: Vectorizer, texts: List[Text]) -> Sparse:
-    let c = counts(v, texts)
     if v.idf.is_empty():
-        return c
-    c.scale_cols(v.idf).normalize_rows()
+        return counts(v, texts)
+    term_counts(v, texts, v.sublinear_tf).scale_cols(v.idf).normalize_rows()

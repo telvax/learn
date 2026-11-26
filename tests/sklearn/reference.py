@@ -24,7 +24,7 @@ print(f"cnb acc={s(accuracy_score(yt, p))} {','.join(p[:30])}")
 p = MultinomialNB(alpha=0.1).fit(xt, y).predict(tv.transform(Xt))
 print(f"mnb-tfidf acc={s(accuracy_score(yt, p))}")
 from sklearn.svm import LinearSVC
-tw = TfidfVectorizer(max_df=0.85, max_features=40, ngram_range=(1, 2), sublinear_tf=True); x2 = tw.fit_transform(X)
+tw = TfidfVectorizer(max_df=0.85, max_features=45, ngram_range=(1, 2), sublinear_tf=True); x2 = tw.fit_transform(X)
 print(f"pipeline-tfidf {','.join(tw.get_feature_names_out())} total={x2.sum():.4f}")
 print(f"lda-counts {','.join(CountVectorizer(max_df=0.85, stop_words='english').fit(X).get_feature_names_out())}")
 svc = LinearSVC(random_state=42).fit(x2, y); xt2 = tw.transform(Xt); d = svc.decision_function(xt2)

@@ -57,7 +57,7 @@ fn text_models(data: Text) -> List[Text]:
     let mnb_t = predict(fit_multinomial(xt, train.label, 0.1), transform(tv, test.text))
     out.push(f"mnb-tfidf acc={six(accuracy(test.label, mnb_t))}")
     # The vectorizer of tweet-sentiment-analysis, and LinearSVC on it.
-    let pipeline = Options(max_features: 40, max_df: 0.85, min_df: 1, ngram_max: 2, stop_words: [], sublinear_tf: True)
+    let pipeline = Options(max_features: 45, max_df: 0.85, min_df: 1, ngram_max: 2, stop_words: [], sublinear_tf: True)
     let tw = fit_tfidf_with(train.text, pipeline)
     let x2 = transform(tw, train.text)
     out.push(f"pipeline-tfidf {std.text.join(tw.words, ",")} total={std.iter.sum(x2.row_sums()):.4f}")

@@ -22,9 +22,11 @@ the vectorizer or the `std.ml.Features` it needs.
 
 | Module | What it has | As scikit-learn's |
 |---|---|---|
-| `learn.text` | `tokenize`, `fit_counts(texts, max_features)`, `fit_tfidf(texts, max_features)`, `transform(v, texts) -> Sparse` | `CountVectorizer`, `TfidfVectorizer` with their defaults (`max_features` 0 keeps every word) |
+| `learn.text` | `tokenize`, `fit_counts(texts, max_features)`, `fit_tfidf(texts, max_features)`, `transform(v, texts) -> Sparse`; `options()` and `fit_counts_with` / `fit_tfidf_with(texts, Options(...))` for `max_df`, `min_df`, n-grams, stop words (`learn.stop_words.english_stop_words()`) and sublinear tf | `CountVectorizer`, `TfidfVectorizer` |
 | `learn.bayes` | `fit_multinomial(x, y, alpha)`, `fit_complement(x, y, alpha)`, `predict`, `scores` | `MultinomialNB`, `ComplementNB` |
 | `learn.linear` | `fit_linear(rows, y)`, `predict_linear`; `fit_logistic(x, y, c, iterations)`, `predict_logistic`, `probabilities`; `sparse_rows(rows)` | `LinearRegression`; `LogisticRegression(C=c)` (multinomial, L-BFGS) |
+| `learn.svm` | `fit_svc(x, y, c, iterations)`, `predict_svc`, `decision` | `LinearSVC(C=c)` (squared hinge, one against the rest) |
+| `learn.lda` | `fit_lda(counts, topics, max_iter, seed)`, `top_words`, `topic_shares` | `LatentDirichletAllocation` (batch variational Bayes) |
 | `learn.tree` | `fit_forest_classifier(rows, y, trees, seed)`, `fit_forest_regressor(rows, y, trees, seed)`, `predict_classes`, `predict_values` | `RandomForestClassifier`, `RandomForestRegressor` (CART, bootstrap, `sqrt` features for classes, all for numbers) |
 
 Labels are `Text`; dense features are `List[List[Float]]`; text features are a `Sparse` matrix.
@@ -38,8 +40,16 @@ three topics, iris and diabetes (`tests/data`, written by `make_data.py`). Then 
   * the vocabulary and its 20 most frequent words, the counts and the idf;
   * the predictions and accuracy of both Naive Bayes, on counts and on TF-IDF;
   * the intercept, the ten coefficients and R² of least squares.
-* **The same to three decimals:** the accuracy and the log loss of logistic regression, on text and on iris. It is another
-  solver of the same objective.
+* **The same to three decimals:**
+  * the accuracy and the log loss of logistic regression, on text and on iris;
+  * the accuracy and the decision values of LinearSVC on the TF-IDF of tweet-sentiment-analysis (bigrams, `max_df`,
+    sublinear tf).
+
+  Both use another solver for the same objective: the L-BFGS of `learn.optimize`.
+* **Vocabulary ties:** when terms tie at the `max_features` cut, scikit-learn keeps whichever its unstable sort puts first;
+  `learn` keeps the first in alphabetical order. The test uses a cut without a tie.
+* **LDA:** its start is drawn with the generator of Telvax, so its topics are not scikit-learn's. On the three-topic corpus
+  both find the three topics, each with five words from one topic.
 * **Close:** random forests use the generator of Telvax, so their trees are not scikit-learn's. Iris accuracy is 0.960 for
   both; diabetes R² is 0.401 against 0.430.
 

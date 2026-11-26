@@ -1,0 +1,244 @@
+# Decision trees and random forests, as scikit-learn's (CART: the best split of gini impurity for classes, of squared error
+# for numbers, the threshold half way between two values; a forest of bootstrap samples). The trees are kept in flat lists,
+# so a model is a plain value that `std.model.save` writes.
+from std.random import Generator
+
+# A tree. Node `i` splits on `feature[i]` at `threshold[i]` (`<=` goes `left`), or is a leaf when `feature[i]` is -1;
+# `value[i]` is the share of each class in the node, or its mean.
+type Tree:
+    feature: List[Int]
+    threshold: List[Float]
+    left: List[Int]
+    right: List[Int]
+    value: List[List[Float]]
+
+# A forest. `classes` is empty for a regression.
+type Forest:
+    trees: List[Tree]
+    classes: List[Text]
+
+fn int(n: u64) -> Int:
+    std.math.to_int(n)
+
+# The indices of `idx` ordered by `key[i]` (a stable merge sort).
+fn sort_by_key(idx: List[Int], key: List[Float]) -> List[Int]:
+    var cur = idx
+    var width = 1
+    let n = int(idx.len())
+    while width < n:
+        var next: List[Int] = []
+        var lo = 0
+        while lo < n:
+            let mid = std.math.min(lo + width, n)
+            let hi = std.math.min(lo + 2 * width, n)
+            var a = lo
+            var b = mid
+            while a < mid and b < hi:
+                if key.get(cur.get(b).unwrap()).unwrap() < key.get(cur.get(a).unwrap()).unwrap():
+                    next.push(cur.get(b).unwrap())
+                    b = b + 1
+                else:
+                    next.push(cur.get(a).unwrap())
+                    a = a + 1
+            while a < mid:
+                next.push(cur.get(a).unwrap())
+                a = a + 1
+            while b < hi:
+                next.push(cur.get(b).unwrap())
+                b = b + 1
+            lo = hi
+        cur = next
+        width = width * 2
+    cur
+
+# The impurity of a node times its size: gini for `k` classes (`counts`), or the squared error (`sum`, `sq` of `n` values).
+fn weighted(counts: List[Float], n: Float, sum: Float, sq: Float, k: Int) -> Float:
+    if k == 0:
+        return sq - sum * sum / n
+    var g = 1.0
+    for c in counts:
+        g = g - (c / n) * (c / n)
+    g * n
+
+fn leaf_value(idx: List[Int], y: List[Float], k: Int) -> List[Float]:
+    let n = std.math.to_float(idx.len())
+    if k == 0:
+        var s = 0.0
+        for i in idx:
+            s = s + y.get(i).unwrap()
+        return [s / n]
+    var counts: List[Float] = []
+    for c in range(k):
+        counts.push(0.0)
+    for i in idx:
+        let c = std.math.to_int(y.get(i).unwrap())
+        counts[c] = counts.get(c).unwrap() + 1.0
+    counts |> std.iter.map(c => c / n)
+
+# Grows a tree on the rows `idx` of `columns` (one list per feature). `y` holds class numbers when `k` > 0, values when 0.
+# `max_features` features are tried at each node, drawn with `g`; `max_depth` 0 has no limit.
+fn grow(columns: List[List[Float]], y: List[Float], idx: List[Int], k: Int, max_features: Int, max_depth: Int, g: Generator) -> Tree:
+    var feature: List[Int] = [-1]
+    var threshold: List[Float] = [0.0]
+    var left: List[Int] = [-1]
+    var right: List[Int] = [-1]
+    var value: List[List[Float]] = [leaf_value(idx, y, k)]
+    let d = int(columns.len())
+    # The nodes still to split: (node, its rows, its depth).
+    var todo: List[(Int, List[Int], Int)] = [(0, idx, 0)]
+    while not todo.is_empty():
+        let (node, rows, depth) = todo.pop().unwrap()
+        let n = int(rows.len())
+        if n < 2 or (max_depth > 0 and depth >= max_depth):
+            continue
+        # The impurity of the node, to stop at a pure one.
+        var counts: List[Float] = []
+        for c in range(k):
+            counts.push(0.0)
+        var sum = 0.0
+        var sq = 0.0
+        for i in rows:
+            let v = y.get(i).unwrap()
+            if k > 0:
+                counts[std.math.to_int(v)] = counts.get(std.math.to_int(v)).unwrap() + 1.0
+            sum = sum + v
+            sq = sq + v * v
+        let parent = weighted(counts, std.math.to_float(n), sum, sq, k)
+        if parent <= 1.0e-12:
+            continue
+        var best = parent
+        var best_feature = -1
+        var best_threshold = 0.0
+        for j in g.sample(std.iter.range(0, d), std.math.min(max_features, d)):
+            let col = columns.get(j).unwrap()
+            let order = sort_by_key(rows, col)
+            var lc: List[Float] = []
+            for c in range(k):
+                lc.push(0.0)
+            var ls = 0.0
+            var lq = 0.0
+            for p in range(n - 1):
+                let i = order.get(p).unwrap()
+                let v = y.get(i).unwrap()
+                if k > 0:
+                    lc[std.math.to_int(v)] = lc.get(std.math.to_int(v)).unwrap() + 1.0
+                ls = ls + v
+                lq = lq + v * v
+                let here = col.get(i).unwrap()
+                let after = col.get(order.get(p + 1).unwrap()).unwrap()
+                if after <= here:
+                    continue
+                let nl = std.math.to_float(p + 1)
+                let nr = std.math.to_float(n - p - 1)
+                var rc: List[Float] = []
+                for c in range(k):
+                    rc.push(counts.get(c).unwrap() - lc.get(c).unwrap())
+                let cost = weighted(lc, nl, ls, lq, k) + weighted(rc, nr, sum - ls, sq - lq, k)
+                if cost < best - 1.0e-12:
+                    best = cost
+                    best_feature = j
+                    best_threshold = here + (after - here) / 2.0
+        if best_feature < 0:
+            continue
+        var lrows: List[Int] = []
+        var rrows: List[Int] = []
+        let col = columns.get(best_feature).unwrap()
+        for i in rows:
+            if col.get(i).unwrap() <= best_threshold:
+                lrows.push(i)
+            else:
+                rrows.push(i)
+        let l = int(feature.len())
+        let r = l + 1
+        feature[node] = best_feature
+        threshold[node] = best_threshold
+        left[node] = l
+        right[node] = r
+        for part in [lrows, rrows]:
+            feature.push(-1)
+            threshold.push(0.0)
+            left.push(-1)
+            right.push(-1)
+            value.push(leaf_value(part, y, k))
+        todo.push((l, lrows, depth + 1))
+        todo.push((r, rrows, depth + 1))
+    Tree(feature: feature, threshold: threshold, left: left, right: right, value: value)
+
+# The value of the leaf a row falls in.
+fn leaf(t: Tree, row: List[Float]) -> List[Float]:
+    var node = 0
+    while t.feature.get(node).unwrap() >= 0:
+        if row.get(t.feature.get(node).unwrap()).unwrap() <= t.threshold.get(node).unwrap():
+            node = t.left.get(node).unwrap()
+        else:
+            node = t.right.get(node).unwrap()
+    t.value.get(node).unwrap()
+
+fn columns_of(x: List[List[Float]]) -> List[List[Float]]:
+    let d = int(x.get(0).unwrap().len())
+    var cols: List[List[Float]] = []
+    for j in range(d):
+        cols.push(x |> std.iter.map(r => r.get(j).unwrap()))
+    cols
+
+fn forest(x: List[List[Float]], y: List[Float], classes: List[Text], trees: Int, max_features: Int, max_depth: Int, seed: Int) -> Forest:
+    let g = std.random.Generator.new(seed)
+    let cols = columns_of(x)
+    let n = int(x.len())
+    let k = int(classes.len())
+    var out: List[Tree] = []
+    for t in range(trees):
+        # A bootstrap sample: n rows drawn with replacement.
+        var idx: List[Int] = []
+        for i in range(n):
+            idx.push(g.int(0, n - 1))
+        out.push(grow(cols, y, idx, k, max_features, max_depth, g))
+    Forest(trees: out, classes: classes)
+
+# A random forest of `trees` trees for classes, trying the square root of the number of features at each split, as
+# scikit-learn's RandomForestClassifier. The same `seed` gives the same forest.
+fn fit_forest_classifier(x: List[List[Float]], y: List[Text], trees: Int, seed: Int) -> Forest:
+    let seen: Map[Text, Int] = std.map.new()
+    for c in y:
+        seen.insert(c, 0)
+    let classes = seen.keys()
+    var i = 0
+    for c in classes:
+        seen.insert(c, i)
+        i = i + 1
+    let d = std.math.to_float(x.get(0).unwrap().len())
+    let m = std.math.max(1, std.math.to_int(std.math.sqrt(d)))
+    forest(x, y |> std.iter.map(c => std.math.to_float(seen.get(c).unwrap())), classes, trees, m, 0, seed)
+
+# A random forest for numbers, trying every feature at each split, as RandomForestRegressor.
+fn fit_forest_regressor(x: List[List[Float]], y: List[Float], trees: Int, seed: Int) -> Forest:
+    forest(x, y, [], trees, int(x.get(0).unwrap().len()), 0, seed)
+
+# The mean over the trees of the leaf values of a row.
+fn average(f: Forest, row: List[Float]) -> List[Float]:
+    var acc: List[Float] = []
+    for t in f.trees:
+        let v = leaf(t, row)
+        if acc.is_empty():
+            acc = v |> std.iter.map(x => x)
+        else:
+            for c in range(int(v.len())):
+                acc[c] = acc.get(c).unwrap() + v.get(c).unwrap()
+    let n = std.math.to_float(f.trees.len())
+    acc |> std.iter.map(x => x / n)
+
+# The class of each row: the largest mean share over the trees.
+fn predict_classes(f: Forest, x: List[List[Float]]) -> List[Text]:
+    let out: List[Text] = []
+    for row in x:
+        let p = average(f, row)
+        var best = 0
+        for c in range(int(p.len())):
+            if p.get(c).unwrap() > p.get(best).unwrap():
+                best = c
+        out.push(f.classes.get(best).unwrap())
+    out
+
+# The value of each row: the mean of the trees.
+fn predict_values(f: Forest, x: List[List[Float]]) -> List[Float]:
+    x |> std.iter.map(row => average(f, row).get(0).unwrap())

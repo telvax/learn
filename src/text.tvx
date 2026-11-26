@@ -1,0 +1,70 @@
+# Text to features, as scikit-learn's CountVectorizer and TfidfVectorizer with their defaults: lower case, tokens of two or
+# more word characters, the vocabulary in alphabetical order, and for TF-IDF the smooth idf and rows of length 1.
+from std.sparse import Sparse
+
+# What `fit_counts` or `fit_tfidf` learned. `idf` is empty for counts.
+type Vectorizer:
+    words: List[Text]
+    index: Map[Text, Int]
+    idf: List[Float]
+
+# The tokens of a text: runs of two or more letters, digits or `_`, in lower case.
+fn tokenize(text: Text) -> List[Text]:
+    std.text.find_all(text.to_lowercase(), "\\b\\w\\w+\\b")
+
+fn vocabulary(texts: List[Text], max_features: Int) -> Vectorizer:
+    let freq: Map[Text, Int] = std.map.new()
+    for t in texts:
+        for w in tokenize(t):
+            freq.insert(w, freq.get(w).unwrap_or(0) + 1)
+    let words: List[Text] = []
+    if max_features <= 0 or max_features >= freq.len():
+        for w in freq.keys():
+            words.push(w)
+    else:
+        # The `max_features` most frequent words (ties by word), then in alphabetical order.
+        let ranked: List[Text] = []
+        for w, n in freq.entries():
+            ranked.push(f"{1000000000 - n:010d}\t{w}")
+        ranked.sort()
+        for key in ranked.take(max_features):
+            words.push(key.split("\t").get(1).unwrap())
+        words.sort()
+    let index: Map[Text, Int] = std.map.new()
+    var i = 0
+    for w in words:
+        index.insert(w, i)
+        i = i + 1
+    Vectorizer(words: words, index: index, idf: [])
+
+# How many times each word of the vocabulary is in each text, as a sparse matrix with one row per text.
+fn counts(v: Vectorizer, texts: List[Text]) -> Sparse:
+    let rows: List[List[(Int, Float)]] = []
+    for t in texts:
+        let row: List[(Int, Float)] = []
+        for w in tokenize(t):
+            match v.index.get(w):
+                case Some(j):
+                    row.push((j, 1.0))
+                case None:
+                    pass
+        rows.push(row)
+    std.sparse.from_rows(rows, v.words.len())
+
+# A vocabulary of word counts. `max_features` keeps the most frequent words; 0 keeps them all.
+fn fit_counts(texts: List[Text], max_features: Int) -> Vectorizer:
+    vocabulary(texts, max_features)
+
+# A vocabulary with the idf of each word: ln((1 + n) / (1 + df)) + 1.
+fn fit_tfidf(texts: List[Text], max_features: Int) -> Vectorizer:
+    let v = vocabulary(texts, max_features)
+    let n = std.math.to_float(texts.len())
+    let idf = counts(v, texts).col_counts() |> std.iter.map(df => std.math.ln((1.0 + n) / (1.0 + std.math.to_float(df))) + 1.0)
+    Vectorizer(words: v.words, index: v.index, idf: idf)
+
+# The features of texts: counts, or for a TF-IDF vectorizer the counts times the idf, each row divided by its length.
+fn transform(v: Vectorizer, texts: List[Text]) -> Sparse:
+    let c = counts(v, texts)
+    if v.idf.is_empty():
+        return c
+    c.scale_cols(v.idf).normalize_rows()

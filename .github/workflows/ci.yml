@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The package needs std.sparse, std.ml and std.model, which are in the `develop` branch of Telvax and not yet in a
+      # release. Once a release has them, this becomes the install script (scripts/install.sh) of Telvax.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Telvax from develop
+        run: cargo install --locked --git https://github.com/telvax/telvax --branch develop telvax_cli telvax_pkg
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install scikit-learn==1.5.2
+      - name: Check, format and unit tests
+        run: |
+          for f in src/*.tvx; do telvax check "$f"; telvax fmt --check "$f"; done
+          telvax test src/learn_test.tvx
+      - name: The same results as scikit-learn
+        working-directory: tests/sklearn
+        run: |
+          tvpm run main > telvax.txt
+          python reference.py > sklearn.txt
+          python compare.py telvax.txt sklearn.txt

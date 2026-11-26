@@ -1,0 +1,116 @@
+# The models of `learn` on the data of tests/data, printed line by line as reference.py prints scikit-learn's.
+from learn.text import fit_counts, fit_tfidf, transform
+from learn.bayes import fit_multinomial, fit_complement, predict
+from learn.tree import fit_forest_classifier, fit_forest_regressor, predict_classes, predict_values
+from learn.linear import fit_linear, predict_linear, fit_logistic, predict_logistic, probabilities, sparse_rows
+
+type Flower:
+    sepal_length: Float
+    sepal_width: Float
+    petal_length: Float
+    petal_width: Float
+    species: Text
+
+type Patient:
+    age: Float
+    sex: Float
+    bmi: Float
+    bp: Float
+    s1: Float
+    s2: Float
+    s3: Float
+    s4: Float
+    s5: Float
+    s6: Float
+    target: Float
+
+type Doc:
+    text: Text
+    label: Text
+
+fn six(x: Float) -> Text:
+    f"{x:.6f}"
+
+fn accuracy(y: List[Text], p: List[Text]) -> Float:
+    std.ml.accuracy(y, p)
+
+fn text_models(data: Text) -> List[Text]:
+    let t: Table[Doc] = std.table.read_csv(data + "/corpus.csv")
+    let (train, test) = std.ml.split_by_time(t, 1.0 / 3.0)
+    let out: List[Text] = []
+    let cv = fit_counts(train.text, 0)
+    let xc = transform(cv, train.text)
+    out.push(f"counts {cv.words.len()} {std.text.join(cv.words.take(8), ",")} nnz={xc.nnz()} total={six(std.iter.sum(xc.row_sums()))}")
+    let top = fit_counts(train.text, 20)
+    out.push(f"top20 {std.text.join(top.words, ",")}")
+    let tv = fit_tfidf(train.text, 0)
+    let xt = transform(tv, train.text)
+    out.push(f"tfidf total={std.iter.sum(xt.row_sums()):.4f} row0={six(xt.row_sums().get(0).unwrap())} idf0={six(tv.idf.get(0).unwrap())}")
+    let xtest = transform(cv, test.text)
+    let mnb = predict(fit_multinomial(xc, train.label, 1.0), xtest)
+    out.push(f"mnb acc={six(accuracy(test.label, mnb))} {std.text.join(mnb.take(30), ",")}")
+    let cnb = predict(fit_complement(xc, train.label, 1.0), xtest)
+    out.push(f"cnb acc={six(accuracy(test.label, cnb))} {std.text.join(cnb.take(30), ",")}")
+    let mnb_t = predict(fit_multinomial(xt, train.label, 0.1), transform(tv, test.text))
+    out.push(f"mnb-tfidf acc={six(accuracy(test.label, mnb_t))}")
+    out
+
+# The mean log loss of predicted probabilities.
+fn log_loss(classes: List[Text], y: List[Text], p: List[Float]) -> Float:
+    let k = classes.len()
+    var total = 0.0
+    var r = 0
+    for label in y:
+        var c = 0
+        for name in classes:
+            if name == label:
+                total = total - std.math.ln(p.get(r * k + c).unwrap())
+            c = c + 1
+        r = r + 1
+    total / std.math.to_float(y.len())
+
+fn linear_models(data: Text) -> List[Text]:
+    let out: List[Text] = []
+    let d: Table[Patient] = std.table.read_csv(data + "/diabetes.csv")
+    let x = d.to_rows() |> std.iter.map(p => [p.age, p.sex, p.bmi, p.bp, p.s1, p.s2, p.s3, p.s4, p.s5, p.s6])
+    let y = std.tensor.to_vec(d.target)
+    let lr = fit_linear(x, y).unwrap()
+    out.push(f"linear intercept={lr.intercept:.6f} coef={std.text.join(lr.coef |> std.iter.map(v => f"{v:.4f}"), ",")} r2={std.ml.r2(y, predict_linear(lr, x)):.6f}")
+    let t: Table[Doc] = std.table.read_csv(data + "/corpus.csv")
+    let (train, test) = std.ml.split_by_time(t, 1.0 / 3.0)
+    let cv = fit_counts(train.text, 0)
+    let m = fit_logistic(transform(cv, train.text), train.label, 1.0, 500)
+    let xt = transform(cv, test.text)
+    out.push(f"logistic-text acc={std.ml.accuracy(test.label, predict_logistic(m, xt)):.3f} loss={log_loss(m.classes, test.label, probabilities(m, xt)):.3f}")
+    let iris: Table[Flower] = std.table.read_csv(data + "/iris.csv")
+    let rows = iris.to_rows() |> std.iter.map(f => [f.sepal_length, f.sepal_width, f.petal_length, f.petal_width])
+    let im = fit_logistic(sparse_rows(rows), iris.species, 1.0, 500)
+    out.push(f"logistic-iris acc={std.ml.accuracy(iris.species, predict_logistic(im, sparse_rows(rows))):.3f} loss={log_loss(im.classes, iris.species, probabilities(im, sparse_rows(rows))):.3f}")
+    out
+
+fn every_third(n: u64, test: Bool) -> List[Int]:
+    var out: List[Int] = []
+    for i in range(std.math.to_int(n)):
+        if (i % 3 == 0) == test:
+            out.push(i)
+    out
+
+fn forests(data: Text) -> List[Text]:
+    let out: List[Text] = []
+    let iris: Table[Flower] = std.table.read_csv(data + "/iris.csv")
+    let rows = iris.to_rows() |> std.iter.map(f => [f.sepal_length, f.sepal_width, f.petal_length, f.petal_width])
+    let tr = every_third(rows.len(), False)
+    let te = every_third(rows.len(), True)
+    let pick = (idx: List[Int]) => idx |> std.iter.map(i => rows.get(i).unwrap())
+    let labels = (idx: List[Int]) => idx |> std.iter.map(i => iris.species.get(i).unwrap())
+    let rf = fit_forest_classifier(pick(tr), labels(tr), 50, 42)
+    out.push(f"forest-iris acc={std.ml.accuracy(labels(te), predict_classes(rf, pick(te))):.3f}")
+    let d: Table[Patient] = std.table.read_csv(data + "/diabetes.csv")
+    let x = d.to_rows() |> std.iter.map(p => [p.age, p.sex, p.bmi, p.bp, p.s1, p.s2, p.s3, p.s4, p.s5, p.s6])
+    let y = std.tensor.to_vec(d.target)
+    let fr = fit_forest_regressor(x.take(342), y.take(342), 30, 42)
+    out.push(f"forest-diabetes r2={std.ml.r2(y.skip(342), predict_values(fr, x.skip(342))):.3f}")
+    out
+
+fn main(data: Text = "../data") -> Text:
+    std.text.join(text_models(data) + linear_models(data) + forests(data), "\n")

@@ -1,0 +1,6 @@
+[package]
+name = "learn"
+version = "0.1.0"
+edition = "2026"
+description = "Models for Telvax on std.ml and std.sparse: text vectorizers, Naive Bayes, linear and logistic regression, random forests"
+license = "MIT OR Apache-2.0"

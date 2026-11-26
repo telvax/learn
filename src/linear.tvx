@@ -1,0 +1,281 @@
+# Linear models: least squares (scikit-learn's LinearRegression) and multinomial logistic regression with an L2 penalty
+# (LogisticRegression with C), on rows of numbers or on a sparse matrix.
+from std.sparse import Sparse
+
+# A length as an `Int`.
+fn int(n: u64) -> Int:
+    std.math.to_int(n)
+
+# Dense rows as a sparse matrix, for the models that take one.
+fn sparse_rows(rows: List[List[Float]]) -> Sparse:
+    let out: List[List[(Int, Float)]] = []
+    var width = 0
+    for r in rows:
+        let row: List[(Int, Float)] = []
+        var j = 0
+        for v in r:
+            row.push((j, v))
+            j = j + 1
+        width = j
+        out.push(row)
+    std.sparse.from_rows(out, width)
+
+# ---- least squares
+
+type LinearRegression:
+    coef: List[Float]
+    intercept: Float
+
+# Solves `a x = b` for a square `a` (row after row) by Gaussian elimination with partial pivoting.
+fn solve(a: List[Float], b: List[Float], n: Int) -> Result[List[Float], Text]:
+    let m: List[Float] = []
+    for i in range(n):
+        for j in range(n):
+            m.push(a.get(i * n + j).unwrap())
+        m.push(b.get(i).unwrap())
+    let w = n + 1
+    var rows: List[List[Float]] = []
+    for i in range(n):
+        rows.push(m.skip(i * w).take(w))
+    for col in range(n):
+        var pivot = col
+        for r in range(col + 1, n):
+            if std.math.abs(rows.get(r).unwrap().get(col).unwrap()) > std.math.abs(rows.get(pivot).unwrap().get(col).unwrap()):
+                pivot = r
+        let p = rows.get(pivot).unwrap()
+        if std.math.abs(p.get(col).unwrap()) < 1.0e-12:
+            return Err("the features are linearly dependent; drop one of them")
+        rows[pivot] = rows.get(col).unwrap()
+        rows[col] = p
+        for r in range(n):
+            if r != col:
+                let row = rows.get(r).unwrap()
+                let k = row.get(col).unwrap() / p.get(col).unwrap()
+                if k != 0.0:
+                    let next: List[Float] = []
+                    for j in range(w):
+                        next.push(row.get(j).unwrap() - k * p.get(j).unwrap())
+                    rows[r] = next
+    let x: List[Float] = []
+    for i in range(n):
+        let row = rows.get(i).unwrap()
+        x.push(row.get(n).unwrap() / row.get(i).unwrap())
+    Ok(x)
+
+fn mean(xs: List[Float]) -> Float:
+    std.iter.sum(xs) / std.math.to_float(xs.len())
+
+# Least squares with an intercept: the normal equations of the centered data, solved exactly.
+fn fit_linear(x: List[List[Float]], y: List[Float]) -> Result[LinearRegression, Text]:
+    let d = int(x.get(0).unwrap().len())
+    let means: List[Float] = []
+    for j in range(d):
+        means.push(mean(x |> std.iter.map(r => r.get(j).unwrap())))
+    let ym = mean(y)
+    var xtx: List[Float] = []
+    for i in range(d * d):
+        xtx.push(0.0)
+    var xty: List[Float] = []
+    for j in range(d):
+        xty.push(0.0)
+    var row_i = 0
+    for r in x:
+        let c: List[Float] = []
+        for j in range(d):
+            c.push(r.get(j).unwrap() - means.get(j).unwrap())
+        let yc = y.get(row_i).unwrap() - ym
+        for i in range(d):
+            let ci = c.get(i).unwrap()
+            xty[i] = xty.get(i).unwrap() + ci * yc
+            for j in range(d):
+                xtx[i * d + j] = xtx.get(i * d + j).unwrap() + ci * c.get(j).unwrap()
+        row_i = row_i + 1
+    let coef = solve(xtx, xty, d)?
+    var b = ym
+    for j in range(d):
+        b = b - coef.get(j).unwrap() * means.get(j).unwrap()
+    Ok(LinearRegression(coef: coef, intercept: b))
+
+fn predict_linear(m: LinearRegression, x: List[List[Float]]) -> List[Float]:
+    x |> std.iter.map(r => m.intercept + std.iter.sum(std.iter.zip(r, m.coef) |> std.iter.map(p => p.0 * p.1)))
+
+# ---- logistic regression
+
+# `weights` has one row of `classes.len()` values per feature, row after row.
+type LogisticRegression:
+    classes: List[Text]
+    weights: List[Float]
+    intercept: List[Float]
+    features: Int
+
+fn classes_of(y: List[Text]) -> List[Text]:
+    let seen: Map[Text, Int] = std.map.new()
+    for c in y:
+        seen.insert(c, 1)
+    seen.keys()
+
+# The probability of every class for every row, row after row.
+fn probabilities(m: LogisticRegression, x: Sparse) -> List[Float]:
+    let k = int(m.classes.len())
+    let t: List[(Int, Int, Float)] = []
+    for j in range(m.features):
+        for c in range(k):
+            t.push((j, c, m.weights.get(j * k + c).unwrap()))
+    let logits = std.tensor.to_vec(x.matmul(std.sparse.from_triplets(m.features, k, t).to_dense()))
+    let out: List[Float] = []
+    for r in range(x.rows()):
+        var top = -1.0e308
+        for c in range(k):
+            let z = std.math.to_float(logits.get(r * k + c).unwrap()) + m.intercept.get(c).unwrap()
+            if z > top:
+                top = z
+        let e: List[Float] = []
+        for c in range(k):
+            e.push(std.math.exp(std.math.to_float(logits.get(r * k + c).unwrap()) + m.intercept.get(c).unwrap() - top))
+        let total = std.iter.sum(e)
+        for v in e:
+            out.push(v / total)
+    out
+
+fn dot(a: List[Float], b: List[Float]) -> Float:
+    var s = 0.0
+    var i = 0
+    for v in a:
+        s = s + v * b.get(i).unwrap()
+        i = i + 1
+    s
+
+# `a + k b`.
+fn axpy(a: List[Float], k: Float, b: List[Float]) -> List[Float]:
+    var out: List[Float] = []
+    var i = 0
+    for v in a:
+        out.push(v + k * b.get(i).unwrap())
+        i = i + 1
+    out
+
+# The objective and its gradient at `theta` (the weights, feature after feature, then the intercepts): the mean log loss
+# of the rows plus `|W|^2 / (2 c n)`.
+fn objective(x: Sparse, xt: Sparse, target: List[Int], classes: List[Text], theta: List[Float], c: Float) -> (Float, List[Float]):
+    let k = int(classes.len())
+    let f = x.cols()
+    let n = std.math.to_float(x.rows())
+    let m = LogisticRegression(classes: classes, weights: theta.take(f * k), intercept: theta.skip(f * k), features: f)
+    let p = probabilities(m, x)
+    var loss = 0.0
+    var resid: List[(Int, Int, Float)] = []
+    var gb: List[Float] = []
+    for j in range(k):
+        gb.push(0.0)
+    for r in range(x.rows()):
+        let t = target.get(r).unwrap()
+        loss = loss - std.math.ln(std.math.max(p.get(r * k + t).unwrap(), 1.0e-300))
+        for cl in range(k):
+            let d = (p.get(r * k + cl).unwrap() - (1.0 if cl == t else 0.0)) / n
+            resid.push((r, cl, d))
+            gb[cl] = gb.get(cl).unwrap() + d
+    let gw = std.tensor.to_vec(xt.matmul(std.sparse.from_triplets(x.rows(), k, resid).to_dense()))
+    var grad: List[Float] = []
+    var penalty = 0.0
+    var j = 0
+    for g in gw:
+        let w = theta.get(j).unwrap()
+        grad.push(std.math.to_float(g) + w / (c * n))
+        penalty = penalty + w * w
+        j = j + 1
+    for g in gb:
+        grad.push(g)
+    (loss / n + penalty / (2.0 * c * n), grad)
+
+# Multinomial logistic regression that minimizes the log loss of the rows plus `|W|^2 / (2 c)`, as scikit-learn's
+# LogisticRegression(C=c) with its lbfgs solver (the intercept is not penalized): L-BFGS with ten corrections and a
+# backtracking line search, until the largest part of the gradient is under 1e-6 or after `iterations` steps.
+fn fit_logistic(x: Sparse, y: List[Text], c: Float, iterations: Int) -> LogisticRegression:
+    let classes = classes_of(y)
+    let k = int(classes.len())
+    let f = x.cols()
+    let at: Map[Text, Int] = std.map.new()
+    var i = 0
+    for cl in classes:
+        at.insert(cl, i)
+        i = i + 1
+    let target: List[Int] = y |> std.iter.map(v => at.get(v).unwrap())
+    let xt = x.transpose()
+    var theta: List[Float] = []
+    for j in range(f * k + k):
+        theta.push(0.0)
+    var (fx, g) = objective(x, xt, target, classes, theta, c)
+    var ss: List[List[Float]] = []
+    var ys: List[List[Float]] = []
+    for it in range(iterations):
+        var gmax = 0.0
+        for v in g:
+            gmax = std.math.max(gmax, std.math.abs(v))
+        if gmax < 1.0e-6:
+            break
+        # The two loops of L-BFGS: the direction from the last corrections.
+        var q = g |> std.iter.map(v => v)
+        let h = int(ss.len())
+        var alphas: List[Float] = []
+        for back in range(h):
+            let idx = h - 1 - back
+            let s = ss.get(idx).unwrap()
+            let yv = ys.get(idx).unwrap()
+            let a = dot(s, q) / dot(yv, s)
+            alphas.push(a)
+            q = axpy(q, -a, yv)
+        var gamma = 1.0 / std.math.max(gmax, 1.0)
+        if h > 0:
+            let s = ss.get(h - 1).unwrap()
+            let yv = ys.get(h - 1).unwrap()
+            gamma = dot(s, yv) / dot(yv, yv)
+        var r = q |> std.iter.map(v => v * gamma)
+        for idx in range(h):
+            let s = ss.get(idx).unwrap()
+            let yv = ys.get(idx).unwrap()
+            let bta = dot(yv, r) / dot(yv, s)
+            r = axpy(r, alphas.get(h - 1 - idx).unwrap() - bta, s)
+        let d = r |> std.iter.map(v => -v)
+        var slope = dot(g, d)
+        var dir = d
+        if slope >= 0.0:
+            # Not a descent direction: start again from the gradient.
+            dir = g |> std.iter.map(v => -v)
+            slope = dot(g, dir)
+            ss = []
+            ys = []
+        var step = 1.0
+        var next = axpy(theta, step, dir)
+        var (fn_, gn) = objective(x, xt, target, classes, next, c)
+        var tries = 0
+        while fn_ > fx + 1.0e-4 * step * slope and tries < 40:
+            step = step / 2.0
+            next = axpy(theta, step, dir)
+            let (a2, b2) = objective(x, xt, target, classes, next, c)
+            fn_ = a2
+            gn = b2
+            tries = tries + 1
+        let s = axpy(next, -1.0, theta)
+        let yv = axpy(gn, -1.0, g)
+        if dot(s, yv) > 1.0e-12:
+            ss.push(s)
+            ys.push(yv)
+            if ss.len() > 10:
+                ss = ss.skip(1)
+                ys = ys.skip(1)
+        theta = next
+        fx = fn_
+        g = gn
+    LogisticRegression(classes: classes, weights: theta.take(f * k), intercept: theta.skip(f * k), features: f)
+
+fn predict_logistic(m: LogisticRegression, x: Sparse) -> List[Text]:
+    let k = int(m.classes.len())
+    let p = probabilities(m, x)
+    let out: List[Text] = []
+    for r in range(x.rows()):
+        var best = 0
+        for c in range(k):
+            if p.get(r * k + c).unwrap() > p.get(r * k + best).unwrap():
+                best = c
+        out.push(m.classes.get(best).unwrap())
+    out

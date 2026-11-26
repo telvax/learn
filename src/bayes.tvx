@@ -1,0 +1,88 @@
+# Naive Bayes for counts, as scikit-learn's MultinomialNB and ComplementNB.
+from std.sparse import Sparse
+
+# A fitted model. `log_prob` has one row of `features` values per class, row after row.
+type NaiveBayes:
+    classes: List[Text]
+    log_prior: List[Float]
+    log_prob: List[Float]
+    features: Int
+    complement: Bool
+
+# A length as an `Int`.
+fn int(n: u64) -> Int:
+    std.math.to_int(n)
+
+fn classes_of(y: List[Text]) -> List[Text]:
+    let seen: Map[Text, Int] = std.map.new()
+    for c in y:
+        seen.insert(c, 1)
+    seen.keys()
+
+fn rows_of(y: List[Text], c: Text) -> List[Int]:
+    let out: List[Int] = []
+    var i = 0
+    for v in y:
+        if v == c:
+            out.push(i)
+        i = i + 1
+    out
+
+fn fit(x: Sparse, y: List[Text], alpha: Float, complement: Bool) -> NaiveBayes:
+    let classes = classes_of(y)
+    let f = x.cols()
+    let n = std.math.to_float(y.len())
+    let per_class: List[List[Float]] = []
+    let prior: List[Float] = []
+    for c in classes:
+        let rows = rows_of(y, c)
+        per_class.push(x.select_rows(rows).col_sums())
+        prior.push(std.math.ln(std.math.to_float(rows.len()) / n))
+    let all = x.col_sums()
+    let log_prob: List[Float] = []
+    for counts in per_class:
+        # Complement: the counts of the other classes; the weights are minus their logarithm.
+        let use: List[Float] = []
+        for j in range(f):
+            let mine = counts.get(j).unwrap()
+            use.push((all.get(j).unwrap() - mine if complement else mine) + alpha)
+        let total = std.iter.sum(use)
+        for v in use:
+            let lp = std.math.ln(v / total)
+            log_prob.push(-lp if complement else lp)
+    NaiveBayes(classes: classes, log_prior: prior, log_prob: log_prob, features: f, complement: complement)
+
+# MultinomialNB(alpha).
+fn fit_multinomial(x: Sparse, y: List[Text], alpha: Float) -> NaiveBayes:
+    fit(x, y, alpha, False)
+
+# ComplementNB(alpha), which does better than MultinomialNB on classes of different sizes.
+fn fit_complement(x: Sparse, y: List[Text], alpha: Float) -> NaiveBayes:
+    fit(x, y, alpha, True)
+
+# The score of every class for every row, row after row.
+fn scores(m: NaiveBayes, x: Sparse) -> List[f32]:
+    let k = int(m.classes.len())
+    let t: List[(Int, Int, Float)] = []
+    for c in range(k):
+        for j in range(m.features):
+            t.push((j, c, m.log_prob.get(c * m.features + j).unwrap()))
+    std.tensor.to_vec(x.matmul(std.sparse.from_triplets(m.features, k, t).to_dense()))
+
+# The class of each row. ComplementNB, like scikit-learn's, leaves out the prior when there is more than one class.
+fn predict(m: NaiveBayes, x: Sparse) -> List[Text]:
+    let k = int(m.classes.len())
+    let s = scores(m, x)
+    let out: List[Text] = []
+    for r in range(x.rows()):
+        var best = 0
+        var best_score = -1.0e308
+        for c in range(k):
+            var v = std.math.to_float(s.get(r * k + c).unwrap())
+            if not m.complement or k == 1:
+                v = v + m.log_prior.get(c).unwrap()
+            if v > best_score:
+                best_score = v
+                best = c
+        out.push(m.classes.get(best).unwrap())
+    out

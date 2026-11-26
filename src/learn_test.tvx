@@ -1,0 +1,37 @@
+from text import tokenize, fit_counts, fit_tfidf, transform
+from linear import solve, fit_linear, predict_linear
+from tree import sort_by_key, fit_forest_classifier, predict_classes
+from bayes import fit_multinomial, predict
+
+fn test_tokens_are_two_or_more_word_characters_in_lower_case():
+    assert_eq(tokenize("A cat, the Café! x 42 snake_case"), ["cat", "the", "café", "42", "snake_case"])
+
+fn test_a_vocabulary_is_alphabetical_and_keeps_the_most_frequent():
+    assert_eq(fit_counts(["bb aa aa", "cc aa bb", "dd"], 0).words, ["aa", "bb", "cc", "dd"])
+    assert_eq(fit_counts(["bb aa aa", "cc aa bb", "dd"], 2).words, ["aa", "bb"])
+    let x = transform(fit_tfidf(["aa bb", "aa"], 0), ["aa bb", "aa"])
+    assert_eq(x.get(1, 0), 1.0)
+
+fn test_sorting_by_a_key_keeps_the_order_of_equals():
+    assert_eq(sort_by_key([0, 1, 2, 3, 4], [3.0, 1.0, 3.0, 0.5, 1.0]), [3, 1, 4, 0, 2])
+
+fn test_linear_systems_and_least_squares():
+    let x = solve([2.0, 1.0, 1.0, 3.0], [3.0, 5.0], 2).unwrap()
+    assert(std.math.abs(x.get(0).unwrap() - 0.8) < 1.0e-12 and std.math.abs(x.get(1).unwrap() - 1.4) < 1.0e-12)
+    assert(solve([1.0, 2.0, 2.0, 4.0], [1.0, 2.0], 2).is_err())
+    let m = fit_linear([[1.0], [2.0], [3.0]], [3.0, 5.0, 7.0]).unwrap()
+    assert(std.math.abs(m.coef.get(0).unwrap() - 2.0) < 1.0e-9 and std.math.abs(m.intercept - 1.0) < 1.0e-9)
+    assert(std.math.abs(predict_linear(m, [[10.0]]).get(0).unwrap() - 21.0) < 1.0e-9)
+
+fn test_a_forest_separates_two_clear_groups_and_the_seed_fixes_it():
+    let x = [[0.0, 1.0], [0.2, 0.9], [0.1, 1.2], [5.0, 0.0], [5.2, 0.1], [4.9, 0.3]]
+    let y = ["low", "low", "low", "high", "high", "high"]
+    let f = fit_forest_classifier(x, y, 10, 1)
+    assert_eq(predict_classes(f, [[0.1, 1.0], [5.1, 0.2]]), ["low", "high"])
+    assert_eq(fit_forest_classifier(x, y, 10, 1), f)
+
+fn test_naive_bayes_on_word_counts():
+    let docs = ["goal match team", "team win goal", "code data cloud", "data server code"]
+    let v = fit_counts(docs, 0)
+    let m = fit_multinomial(transform(v, docs), ["sport", "sport", "tech", "tech"], 1.0)
+    assert_eq(predict(m, transform(v, ["goal team", "cloud code"])), ["sport", "tech"])

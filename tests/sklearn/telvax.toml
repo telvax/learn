@@ -1,0 +1,6 @@
+[package]
+name = "sklearn_check"
+version = "0.1.0"
+
+[dependencies]
+learn = { path = "../.." }
